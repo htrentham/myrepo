@@ -1,0 +1,279 @@
+---
+title: "Investigating APD Shootings 2008-17"
+author: "Henry Trentham"
+date: "3/18/2021"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+I looked for the datasets related to the City of Austin on data.gov. There weren't many datasets that had sufficient number of observations, categorical and numerical, and were interesting. Then I came across two related datasets: Officer  profiles and incident information regarding use of lethal force with firearms from 2008-2017. Given recent current and political events, I thought it would be interesting data to investigate. The data contains information on the public servants involved, and also on the nature of the incidents, including weapons involved, age/gender of the officers, and type of dispatch. 
+
+There are many variables and I'm not totally sure of the associations I'll find. I am interested in how prior information and context of the situation correspond to force taken, and how often. However, such a nuanced and serious event makes gathering findings from the data much more of a challenge. 
+
+
+# Tidy Dataset
+
+```{r tidy}
+# import both datasets and explore
+shootings_incidents <- as.data.frame(read.csv("/Users/htrentham/Desktop/Comp Bio/Project 1/Officer_Involved_Shootings_2008-17_Incidents.csv"))
+
+shootings_officers <- as.data.frame(read.csv("/Users/htrentham/Desktop/Comp Bio/Project 1/Officer_Involved_Shootings_2008-17_Officers.csv"))
+
+head(shootings_incidents)
+head(shootings_officers)
+
+library(tidyverse)
+
+# rename variables to make them easier to call
+shootings_incidents <- shootings_incidents %>%
+  rename("Case" = Case..) %>%
+  rename("Weekday" = Day.of.Week) %>%
+  rename("Premise" = Premise.Category) %>%
+  rename("LessLethalB4" = Less.Lethal.Force.used.by.APD.prior.to.shooting.) %>%
+  rename("OfficersPresent" = X..Officers.Present.When.Shots.Fired) %>%
+  rename("Hits" = X..Hits) %>%
+  rename("SubjectWeapon" = Subject.Weapon) %>%
+  rename("OfficerShooters" = Number.of.Officer.Shooters) %>%
+  rename("Location" = Location.1) %>%
+  rename("CallType" = Call.Type.Categories)
+
+shootings_officers <- shootings_officers %>%
+  rename("Case" = Case..) %>%
+  rename("Location" = Location.1) %>%
+  rename("Agency" = PD.Agency...Jurisdiction) %>%
+  rename("YearsEXP" = Years.LE.Experience) %>%
+  rename("Informed" = Was.officer.informed.that.subject.was.armed.) %>%
+  rename("ShotsFiredOfficer" = X..Shots.Fired.by.Officer)
+
+# replace NA in hits column with 0 
+shootings_incidents <- shootings_incidents %>%
+  mutate(Hits = replace_na(Hits,0))
+
+
+```
+
+I renamed a lot of the variables because they were long and wordy. A lot of them also included extraneous characters. I also replaced an NA value for number of hits with a zero value, for one of the incidents. I assumed the NA value indicated no hits for the incident.
+
+# Join/Merge Datsets
+
+```{r join/merge}
+# left join the incidents dataset to the shooting officers dataset because of multiple officers
+shooting_data <- shootings_officers %>%
+  left_join(shootings_incidents, by = "Case")
+
+head(shooting_data)
+
+# check for anymore NA values
+colSums(is.na(shooting_data))
+
+# remove redundant variables 
+shooting_data <- shooting_data %>%
+  select(-Date.y,-Location.y) %>%
+  rename("Date" = Date.x, "Location" = Location.x)
+
+```
+
+I performed a left join of the `shooting_incidents` (y) dataset to the `shooting_officers` dataset. I joined by case because here were no cases dropped after using this join. I chose to perform this join because `shooting_officers` included more observations, and the data in `shooting_incidents` could be added to corresponding officer observations to investigate relationships. Also, this way no officer information was lost. The size of my cleaned data set is 22 variables with 80 observations. 
+
+# Summary Statistics
+
+```{r summary statistics}
+
+# remove irrelevant/extraneous variables
+shooting_data <- shooting_data %>%
+  select(-Rank,-Agency,-Officer.Weapon.Caliber,-Weekday,-Officer.Weapon.Type,-How.Cleared)
+
+# standardize gun types
+shooting_data <- shooting_data %>%
+  mutate(SubjectWeapon = replace(SubjectWeapon,SubjectWeapon == "rifle" | SubjectWeapon == "handgun", "gun")) %>%
+  # Remove multiple weapon instances
+  slice(-c(23))
+
+# lower all characters in mixed case variables
+shooting_data <- shooting_data %>% 
+  mutate(Informed = tolower(Informed)) %>%
+  mutate(Premise = tolower(Premise)) %>%
+  mutate(LessLethalB4 = tolower(LessLethalB4))
+
+# number of shooting incidents by subject weapon 
+shooting_data %>%
+  group_by(SubjectWeapon) %>%
+  summarise(count = n(), .groups = 'keep')
+
+# determine number of distinct incidents per officer
+shooting_data %>%
+  group_by(Officer.Name) %>%
+  summarise(count = n()) %>%
+  # officers with more than one incident
+  filter(count > 1)
+
+# shooting data for those 3 officers with more than one incident
+shooting_data %>%
+  filter(Officer.Name %in% c("Ofc James Harvel", "Ofc. Derrick Bowman", "Ofc. Will Ray")) %>%
+  select(-Case,-Location,-Time) %>%
+  arrange(desc(YearsEXP))
+
+# look at information for non-firearm subject weapon
+shooting_data %>%
+  select(SubjectWeapon,Officer.Name,Officer.Gender,Officer.Age,YearsEXP,CallType,Informed,LessLethalB4,Hits) %>%
+  filter(SubjectWeapon != 'gun')
+
+# then look at instances of no weapon
+shooting_data %>%
+  select(SubjectWeapon,Officer.Name,Officer.Gender,Officer.Age,YearsEXP,CallType,Informed,LessLethalB4,Hits) %>%
+  filter(SubjectWeapon == 'none')
+
+# create new variable that is a function of at least one other variable
+shooting_data <- shooting_data %>%
+  mutate(expAgeRatio = YearsEXP/Officer.Age)
+
+# create table of overall summary statistics
+shootingSumm <- shooting_data %>%
+  summarise_at(c('Officer.Age','YearsEXP','ShotsFiredOfficer','OfficerShooters','OfficersPresent','Hits'),
+               list(mean = mean,
+               sd = sd,
+               var = var,
+               min = min,
+               max = max,
+               n_distinct = n_distinct))
+
+# retrieve all summary statistics
+meanShoot <- as.vector(shootingSumm[1:6])
+meanShoot <- pivot_longer(meanShoot,cols = 1:6,names_to = "variable",values_to = 'mean')
+
+sdShoot <- as.vector(shootingSumm[7:12])
+sdShoot <- pivot_longer(sdShoot,cols = 1:6,names_to = "variable",values_to = 'sd')
+
+varShoot <- as.vector(shootingSumm[13:18])
+varShoot <- pivot_longer(varShoot,cols = 1:6,names_to = "variable",values_to = 'var')
+
+minShoot <- as.vector(shootingSumm[19:24])
+minShoot <- pivot_longer(minShoot,cols = 1:6,names_to = "variable",values_to = 'min')
+
+maxShoot <- as.vector(shootingSumm[25:30])
+maxShoot <- pivot_longer(maxShoot,cols = 1:6,names_to = "variable",values_to = 'max')
+
+n_distinctShoot <- as.vector(shootingSumm[31:36])
+n_distinctShoot <- pivot_longer(n_distinctShoot,cols = 1:6,names_to = "variable",values_to = 'n_distinct')
+
+# assemble table
+shootingSumm <- data.frame(meanShoot,sdShoot,varShoot,minShoot,maxShoot,n_distinctShoot)
+
+# select only numeric variables
+shootingSumm <- shootingSumm %>%
+  select_if(is.numeric,toupper)
+
+# give rownames
+rownames(shootingSumm) <- c('Officer.Age','YearsEXP','ShotsFiredOfficer','OfficerShooters','OfficersPresent','Hits')
+
+shootingSumm
+
+# calculate summary statistics for numeric variables, grouped by subject weapon
+shootingSummSubject <- shooting_data %>%
+  group_by(SubjectWeapon) %>%
+  summarise_if(is.numeric,list(mean = mean, sd = sd, min = min, max = max, n_distinct = n_distinct))
+
+shootingSummSubject
+
+```
+After removing variables that I would not use for analysis, I took away the distinction of rifle, as it was unnecessary for my analysis and removed an instance of multiple weapons on the subject for the same reason. I fixed use of mixed case in some of the character type variables to ensure correct counting. Next, I explored the dataset and determined that most of the incidents of officer shootings involved a gun on the subject, but also a significant number did not. There are three officers in the dataset that were involved in more than one officer shooting incident form 2008-2017. These individuals were all white males with experience ranging 1-~17 years and ages ranging from 23-42. There were three incidences involving no weapon on the subject, not involving the same officers. The call type was either a suspicious person or traffic stop, and did not involve less than lethal force before the shooting occurred. 
+
+Next, I created a new numeric variable `expAgeRatio` which is the ratio of years of officer experience to years of age. For the overall summary statistics, I chose 6 numeric variables and gave corresponding mean, standard deviation, variance, mins and maxes, and distinct counts for values. Interesting findings include a very large spread of officers present at each incident compared to the average value. The average years of experience of an officer involved in an incident was around 7 1/2 years. When grouped by subject weapon, many of the categories didn't have enough observations, but I thought this was the most important categorical variable in terms of context. The average value for the number of officers present was a lot higher for incidents where the subject had a gun, compared to those that didn't, even for the second highest incident weapon 'vehicle.'
+
+# Visualizations
+
+```{r visualizations}
+## use dataset to create visualizations
+
+# create correlation between all numeric variables for correlation heatmap
+shooting_dataNum <- shooting_data %>%
+  select_if(is.numeric)
+
+# create heatmap
+cor(shooting_dataNum, use = "pairwise.complete.obs") %>%
+  as.data.frame %>%
+   # Convert row names to an explicit variable
+  rownames_to_column %>%
+  # Pivot so that all correlations appear in the same column
+  pivot_longer(-1, names_to = "other_var", values_to = "correlation") %>%
+  ggplot(aes(rowname, other_var, fill=correlation)) +
+  # Heatmap with geom_tile
+  geom_tile() +
+  # Change the scale to make the middle appear neutral
+  scale_fill_gradient2(low="red",mid="white",high="blue") +
+  # Overlay values
+  geom_text(aes(label = round(correlation,2)), color = "black", size = 4) +
+  # Give title and labels
+  labs(title = "Correlation matrix for Officer Shooting Incidents 2008-17", x = "variable 1", y = "variable 2")
+
+
+## create additional plots 
+# first create visual of number of officers present at incident in correlation to officer shooter experience, categorized by subject weapon
+figure1 <- shooting_data %>%
+  ggplot(aes(x = YearsEXP, y = OfficersPresent)) +
+  geom_point(aes(color = SubjectWeapon, size = OfficersPresent))
+
+figure1 + scale_color_brewer(palette = 'Spectral') + labs(title = "Officers Present according to Officer Experience")+ xlab("Experience (Years)") + ylab("Number of Officers") 
+
+# visual for shots fired from the officer and corresponding age, with lines corresponding to whether they were informed of the subjects weapon, mean of se is used to display summary statistics. 
+figure2 <- shooting_data %>%
+  ggplot(aes(x = Officer.Age, y = ShotsFiredOfficer)) +
+  geom_path(aes(color = Informed), stat = 'summary')
+
+figure2 + scale_color_brewer(palette = 'Set3') + labs(title = " # Shots fired vs Age of Officer") + xlab("Age (Years)") + ylab("Number of Shots Fired")
+
+```
+The heatmap shows logical relationships between the variables. There are high correlations between number of officers present and shots fired and also number of hits. The first additional figure shows that many of the non-armed subjects in the incidences have a low number of officers present, with little experience. Many of the incidents involve armed subjects. In the second figure, if the officer was informed, no matter his age, he will fire the same number of shots. If the subject was not informed of the weapon, it seems younger officers shoot more shots. There are a lot of factors that go into these situations. 
+
+# Principal Component Analysis
+
+```{r PCA}
+# prepare data for PCA by scaling mean to 0 and unit variance and run PCA
+shootingPCA <- shooting_dataNum %>%
+  scale() %>%
+  prcomp()
+
+# results
+shootingPCA
+
+# rotated data
+head(shootingPCA$x)
+
+# add in categorical data, in this case subject weapon
+pca_data <- data.frame(shootingPCA$x, Weapon = shooting_data$SubjectWeapon)
+head(pca_data)
+
+# visualize first two components with new info
+ggplot(pca_data, aes(x = PC1, y = PC2, color = Weapon)) + 
+  geom_point() +
+  labs(title = "Principal Component Analysis for Officer Shooting Incidents 2008-2017")
+
+# look at rotation matrix
+shootingPCA$rotation
+
+# determine percentage of variance explained by each component
+percent <- 100* (shootingPCA$sdev^2 / sum(shootingPCA$sdev^2))
+percent
+
+# total percent of explained variance significant components
+percent[1] + percent[2] + percent[3] + percent[4]
+
+# insert percentage calculations into dataframe
+ShootingPerc_data <- data.frame(percent = percent, PC = 1:length(percent))
+
+# visualize percentage of components 
+ggplot(ShootingPerc_data, aes(x = PC, y = percent)) + 
+  geom_col() + 
+  geom_text(aes(label = round(percent, 2)), size = 4, vjust = -0.5) + 
+  ylim(0, 80) + 
+  labs(title = "PC Percentages")
+
+```
+
+I used PCA for dimensional reduction, it is the main technique for linear dimension reduction. From both of the figures made from during the PCA, it seems that variance in the dataset is described by more than two variables. Looking at the percentages, variance isn't over 90% accounted for until the 4th variable. This makes sense given the information from the incidences. 
+

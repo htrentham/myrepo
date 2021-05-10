@@ -1,0 +1,326 @@
+---
+title: "Models for Officer Shooting Incidents from 2008-2017"
+author: "Henry Trentham"
+date: "4/18/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(psych)
+library(ggplot2)
+```
+
+# Introduction
+
+For this project, I used a data set I created previously from joining data sets of APD officer profiles and incident information regarding use of lethal force with firearms from 2008-2017. I had already tidied the data which resulted in 12 categorical, 7 numerical, and one ID variable for a total of 20. The variables range from officer ethnicity to number of shots fired. In this project, I will investigate and create models only for a handful of them. There are 79 observations in the data set. 
+
+I expect there to be a couple of strong associations between some of the categorical variables and numerical variables. I think that there will be an effect between `CallType` and `SubjectWeapon` when predicting `OfficersPresent`. I also think that there is a potential association between `LessLethalB4`, `YearEXP`, and `Officer.Age`. 
+
+# EDA
+
+```{r correlation matrix and univariate and bivariate graphs}
+# read in saved dataset from project 1
+shooting_data <- read.csv("/Users/htrentham/Desktop/Comp Bio/Project 2/shootingData.csv")
+
+# select numeric variables from data set and get rid of future variables (knitting and file grab from project 1)
+shooting_dataNUM <- shooting_data %>%
+  select_if(is.numeric) %>%
+  select(-expAgeRatio,-GunPresent,-yInformed,-YearsEXP_c,-ShotsFiredOfficer_c,-prob1,-Officer.Age_c,-logit,-Hits_c)
+
+glimpse(shooting_dataNUM)
+
+# create correlation matrix/heatmap
+cor(shooting_dataNUM, use = "pairwise.complete.obs") %>%
+  as.data.frame %>%
+   # Convert row names to an explicit variable
+  rownames_to_column %>%
+  # Pivot so that all correlations appear in the same column
+  pivot_longer(-1, names_to = "other_var", values_to = "correlation") %>%
+  ggplot(aes(rowname, other_var, fill=correlation)) +
+  # Heatmap with geom_tile
+  geom_tile() +
+  # Change the scale to make the middle appear neutral
+  scale_fill_gradient2(low="red",mid="white",high="blue") +
+  # Overlay values
+  geom_text(aes(label = round(correlation,2)), color = "black", size = 4) +
+  # Give title and labels
+  labs(title = "Correlation matrix for main variables", x = "variable 1", y = "variable 2")
+
+# bivariate and univariate graphs
+pairs.panels(shooting_dataNUM, 
+             method = "pearson", # correlation coefficient method
+             hist.col = "blue", # color of histogram 
+             smooth = FALSE, density = FALSE, ellipses = FALSE)
+
+
+```
+Besides directly related variables like `YearsEXP` and `Officer.Age`, or `ShotsFiredOfficer` and `OfficerShooters`, there aren't many strong correlations. A few interesting observations are that `Officer.Age` and `ShotsFiredOfficer` do not have a strong correlation coefficient, and even `ShotsFiredOfficer` and `Hits` only have a correlation coefficient of 0.41, which is not very strong. This could indicate firearm accuracy. I expect stronger relationships when accounting for effects of categorical variables.
+
+# MANOVA
+
+```{r MANOVA}
+# Means differ between subject weapons?
+shooting_data %>%
+  group_by(SubjectWeapon) %>%
+  summarise(mean(OfficersPresent),mean(OfficerShooters),mean(Officer.Age),mean(ShotsFiredOfficer), mean(Hits), mean(YearsEXP))
+
+# Means differ between previous officer shooting incident?
+shooting_data %>%
+  group_by(Prev.OIS) %>%
+  summarise(mean(OfficersPresent),mean(OfficerShooters),mean(Officer.Age),mean(ShotsFiredOfficer), mean(Hits), mean(YearsEXP))
+
+# Means differ between less than lethal forced used?
+shooting_data %>%
+  group_by(LessLethalB4) %>%
+  summarise(mean(OfficersPresent),mean(OfficerShooters),mean(Officer.Age),mean(ShotsFiredOfficer), mean(Hits), mean(YearsEXP))
+
+# For MANOVA change informed variable no (subject...) observations to the same
+shooting_data <- shooting_data %>%
+  mutate(Informed = replace(Informed,substring(Informed,5,7) == 'sub' ,"no (subject w/ weapon)"))
+
+# Means differ between informed or not?
+shooting_data %>%
+  group_by(Informed) %>%
+  summarise(mean(OfficersPresent),mean(OfficerShooters),mean(Officer.Age),mean(ShotsFiredOfficer), mean(Hits), mean(YearsEXP))
+
+# Perform MANOVA
+manova_shooting <- manova(cbind(OfficersPresent,OfficerShooters,Officer.Age,ShotsFiredOfficer,Hits,YearsEXP) ~ Informed, data = shooting_data)
+
+# View output of MANOVA
+summary(manova_shooting)
+
+# MANOVA was significant so perform ANOVAs
+summary.aov(manova_shooting)
+
+# 2 of the 6 ANOVAs were significant
+
+  # One of them was OfficersPresent, perform post-hoc analysis
+  pairwise.t.test(shooting_data$OfficersPresent,shooting_data$Informed, p.adj = 'none')
+  
+  # Other OfficerShooters, perform post-hoc analysis
+  pairwise.t.test(shooting_data$OfficerShooters,shooting_data$Informed, p.adj = 'none')
+
+# calculate the probability of the type 1 error for officers present    
+prType1 <- 1-0.95^3
+prType1
+
+# correction for p-values: Bonferroni
+pairwise.t.test(shooting_data$OfficersPresent,shooting_data$Informed, p.adj = 'bonferroni')
+  
+pairwise.t.test(shooting_data$OfficerShooters,shooting_data$Informed, p.adj = 'bonferroni')
+  
+# corrected a' is 0.05/3 = 0.0167
+
+```
+
+The MANOVA was significant. 3 pairwise t tests were performed for each variable (there were only 3 categories of my response variable), making the corrected significance level 0.0167. After adjusting p-values of post-hoc analysis, using the Bonferroni method, only the means of officers present differed significantly between the incidents when the officer was informed of the subject having a weapon versus when not, and also when the officer was informed versus when they were not, but the subject had a weapon. All other mean comparisons were not significant.
+
+Most likely not all the assumptions for the MANOVA are met as they are very stringent. However, I believe the variables are distributed normally, random and independent, and have equal variances for ANOVA and post-hoc analysis.
+
+# Randomization Test
+
+```{r Randomization Test}
+# Means differ between previous officer shooting incident?
+shooting_data %>%
+  group_by(Prev.OIS) %>%
+  summarise(mean(OfficersPresent),mean(OfficerShooters),mean(Officer.Age),mean(ShotsFiredOfficer), mean(Hits), mean(YearsEXP))
+
+# Age is the closest and most interesting to investigate. 
+
+# H0: True difference in means is equal to 0
+# HA: True difference in means is not equal to 0 
+
+# Calculate the mean difference between the two conditions
+true_diff <- shooting_data %>%
+  group_by(Prev.OIS) %>%
+  summarize(means = mean(Officer.Age)) %>%
+  summarize(mean_diff = diff(means)) %>%
+  pull
+true_diff
+
+# Calculate observed test statistic for mean difference of officer age (shooter at incident) grouped by whether involved in previous officer shooting incident, many times
+
+mean_diff <- c() #initialize vector
+
+for(i in 1:5000){ 
+  temp <- data.frame(Prev.OIS = shooting_data$Prev.OIS, OfficerAge = sample(shooting_data$Officer.Age)) 
+  
+  mean_diff[i] <- temp %>% 
+    group_by(Prev.OIS) %>%
+    summarize(means = mean(OfficerAge)) %>%
+    summarize(mean_diff = diff(means)) %>%
+    pull
+}
+
+mean_diff
+
+# Represent the distribution of the mean differences with a vertical line showing the true difference
+{hist(mean_diff, main="Distribution of the mean differences"); abline(v = 1.369863, col="red")}
+
+# Calculate the corresponding two-sided p-value
+mean(mean_diff > -true_diff | mean_diff < true_diff)
+
+# Compare to a Welch's t-test
+t.test(data = shooting_data, Officer.Age ~ Prev.OIS)
+
+```
+I expected there to be a potential significant difference in mean age of officers who had previously been involved in an officer shooting incident and those who had not. The null hypothesis is that the true difference between groups in average age is equal to 0, and the alternative is that the difference in average age is not equal to 0. The randomization test produced a distribution and p-value (1) that indicated the true difference in means is equal to 0. The two sample t-test confirmed that the difference between the means was not significant with a p-value of 0.6828.
+
+# Linear Regression Model
+
+```{r LM}
+
+# Build Simple Linear Regression Model, with ShotsFiredOfficer and OfficerAge predicting YearEXP
+
+# Mean-center explanatory variables 
+shooting_data$Hits_c <- shooting_data$Hits - mean(shooting_data$Hits)
+
+shooting_data$YearsEXP_c <- shooting_data$YearsEXP - mean(shooting_data$YearsEXP)
+
+# Create Model
+fit_c <- lm(ShotsFiredOfficer ~ Hits_c + YearsEXP_c + Hits_c:YearsEXP_c, data = shooting_data)
+
+# View Model 
+summary(fit_c)
+
+# Plot interaction between two variables on response
+shooting_data %>%
+  ggplot(aes(Hits,ShotsFiredOfficer,color = YearsEXP)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  labs(title = "Shots Fired vs Hits", x = "Number of Shots", y = "Number of Hits")
+
+# Interpret model coefficients
+
+# R2 explains proportion of variance explained
+summary(fit_c)$r.sq
+
+# Check Assumptions
+
+# Linearity and Equal Variance
+plot(fit_c, which = 1)
+
+library(sandwich)
+library(lmtest)
+
+bptest(fit_c) 
+
+# Normality
+plot(fit_c, which = 2)
+
+shapiro.test(fit_c$residuals)
+
+# Barely passes all assumptions, continue to compute with robust standard errors
+coeftest(fit_c, vcov = vcovHC(fit_c))
+
+# Calculate Bootstrapped Standard Errors
+##  Bootstrap from observations
+# Repeat bootstrapping 5000 times, saving the coefficients each time
+samp_SEs <- replicate(5000, {
+  # Bootstrap your data (resample observations)
+  boot_data <- sample_frac(shooting_data, replace = TRUE)
+  # Fit regression model
+  fitboot <- lm(ShotsFiredOfficer ~ Hits_c + YearsEXP_c + Hits_c:YearsEXP_c, data = boot_data)
+  # Save the coefficients
+  coef(fitboot)
+})
+
+# Estimated SEs
+samp_SEs %>%
+  # Transpose the obtained matrices
+  t %>%
+  # Consider the matrix as a data frame
+  as.data.frame %>%
+  # Compute the standard error (standard deviation of the sampling distribution)
+  summarize_all(sd)
+
+
+```
+
+The intercept coefficient represents average shots fired by officers when hits and years of experience are held constant. The Hit_c coefficient can be interpreted as a 0.66 increase above the average shots fired by officer for every additional hit, while controlling for years of experience, this effect is significant. The YearEXP_c coefficient shows there is not a significant effect of years of experience on shots fired when number of hits are controlled, but it shows an associated 0.017 decrease below average shots fired for every unit increase in years experience, while controlling for number of hits. The coefficient for Hits_c:YearsEXP_C represents the difference in shots fired per hit, across the years of experience. 
+
+The proportion of variance in response explained by the model is 0.1784899 or R^2. After calculating robust standard error, standard error increased as expected and the intercept effect was still just as significant. However, the Hits_c effect became substantially less significant after the adjustment with p-value changing to 0.01466 from 0.0003. After bootstrapping the standard errors, the resulting standard errors were greater than those originally calculated, but less than the robust standard errors, except the coefficient for YearsEXP_c. In terms of P-value and significance, they are similar to the robust standard errors. 
+
+# Logistic Regression
+
+```{r logit}
+# Build Logistic Regression Model to predict subject weapon by number of officers present and years experience
+
+# Create binary categorical variable 
+shooting_data <- shooting_data %>%
+  mutate(yInformed = ifelse(Informed == "yes",1,0))
+
+# Create Model
+logfit <- glm(yInformed ~ OfficersPresent + CallType, data = shooting_data, family = 'binomial')
+
+# Get results of model
+summary(logfit)
+
+# Calculate Odds Ratio
+oddsRatioBoth <- exp(coef(logfit))
+
+oddsRatioBoth
+
+# Calculate predicted probabilities and set cut off
+shooting_data$prob1 <- predict(logfit, type = "response")
+
+# Classification and cutoff
+shooting_data$predicted <- ifelse(shooting_data$prob1 > .5, "yes", "no")
+
+# Confusion Matrix
+shooting_data <- shooting_data %>%
+  mutate(Informed = ifelse(Informed == "yes","yes","no"))
+
+table(true_condition = shooting_data$Informed, predicted_condition = shooting_data$predicted) %>%
+  addmargins
+
+# Accuracy
+(27 + 44)/79
+
+# Sensitivity 
+44/48
+
+# Specificity
+27/31
+
+# Precision/Recall
+44/48
+
+# Predicted log odds for model
+shooting_data$logit <- predict(logfit, type = "link") 
+
+# Density plot of log-odds for each outcome
+shooting_data %>%
+  ggplot() + 
+  geom_density(aes(logit, color = Informed, fill = Informed), alpha = .4) +
+    geom_rug(aes(logit, color = Informed)) +
+  geom_text(x = -5, y = .07, label = "TN = 27") +
+  geom_text(x = -1.75, y = .008, label = "FN = 4") +
+  geom_text(x = 1, y = .006, label = "FP = 4") +
+  geom_text(x = 5, y = .04, label = "TP = 44") +
+  theme(legend.position = c(.85,.85)) +
+  geom_vline(xintercept = 0) + 
+  xlab("logit (log-odds)") +
+  labs(title = "Density Plot of log-odds for Model")
+
+# Generate ROC curve and calculate AUC
+library(plotROC)
+
+ROCplot <- ggplot(shooting_data) +
+  geom_roc(aes(d = yInformed, m = prob1), cutoffs.at = list(0.1, 0.5, 0.9)) +
+  labs(title = "ROC for Model")
+
+ROCplot
+
+calc_auc(ROCplot)
+
+```
+
+There are many different coefficient estimates so I will only highlight a few of the most interesting. The intercept coefficient indicates the log odds when no other effect is taken into consideration (not that meaningful in this context). The OfficersPresent coefficient indicates the increase in log odds of being informed for every additional officer present. For the shots fired group in `CallType`, the coefficient represents the increase in log odds (45) being informed when the dispatch call is shots fired, all other effects are constant. Out of the categorical effects, traffic stop was the least increase in odds when all other effects were controlled for. 
+
+The model had alright accuracy, but very high sensitivity and recall, and lower specificity. From these calculations, I think the model performed very well. 
+
+The sensitivity is really high so the ROC plot makes the model look really good, the area under the curve of 0.97 also indicates that the model is great. 
+
